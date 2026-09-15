@@ -1,0 +1,8 @@
+{
+  "version": 3,
+  "file": "index.js",
+  "sourceRoot": "../../../../",
+  "sources": ["contracts/shadow-escrow.compact", "compiler/standard-library.compact"],
+  "names": [],
+  "mappings": ";;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;EAYA;;;;;;;;;;;;;MAQA,AAAA,OASC;;;;;;;;;;;;;;;;;;;;;;OAAA;MAID,AAAA,UAKC;;OAAA;;;;GArBA;EALD;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;IAPA;;;;;;;;;yEAA4C;IAC5C;;;;;;;;;yEAAgC;IAChC;;;;;;;;;yEAAqC;UAOnC,KAAkB;;IAAlB;;;;;;;2HAAA,KAAkB;;yEAAA;IAClB;;;;;;;;;yEAAQ;UACR,KAAa;IAAb;;;;;;;2HAAA,KAAa;;yEAAA;;;;;;;GACd;ECjBD,AAAA,kBAAA;oEAAA;;;EDUA,AAAA,iBAAoC;;0DAApC,cAAoC;;;;;;;;;;;;;;GAAA;EAUpC,AAAA,UASC;qDARS;;;;;;;;;;;0HAAQ;;kEAEd;;;;;;;;;;;uIAAkB;;;;IAIpB;;;;;;;;;yEAAQ;UACR,KAAa;IAAb;;;;;;;2HAAA,KAAa;;yEAAA;;GACd;EAID,AAAA,aAKC,CALyB,QAAiB;;mCAGvC,QAAM;GAET;;;;;;;;;;;;;;;;;;;;IAjCD;qCAAA;;;;;;;;;;;0GAA4C;KAAA;IAC5C;qCAAA;;;;;;;;;;;0GAAgC;KAAA;IAChC;qCAAA;;;;;;;;;;;0GAAqC;KAAA;;;;;;;;EA0BrC,AAAA,UAKC;;;;UALyB,QAAiB;;;;;;;;wCAAjB,QAAiB;GAK1C;;;;"
+}
