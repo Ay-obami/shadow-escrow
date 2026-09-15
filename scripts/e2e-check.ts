@@ -1,12 +1,9 @@
 /**
- * End-to-end smoke check for shadow-escrow.
+ * End-to-end smoke check for ShadowEscrow.
  *
- * Reconnects to the deployed contract, reads its ledger state, and exits 0
- * on success. Used by `npm run test:e2e` and by the project's CI workflows.
+ * Reconnects with the same deterministic private witness state used at deploy
+ * time, reads public ledger state, and exits 0 on success.
  */
-import * as fs from 'node:fs';
-import * as path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocket } from 'ws';
 
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
@@ -14,17 +11,24 @@ import { httpClientProofProvider } from '@midnight-ntwrk/midnight-js-http-client
 import { indexerPublicDataProvider } from '@midnight-ntwrk/midnight-js-indexer-public-data-provider';
 import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-private-state-provider';
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
-import { resolveNetwork, getOrCreateWallet, formatWalletBackupNotice, getDeployment } from '../src/network';
-import { createWallet, persistWalletState } from '../src/wallet';
-import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+
+import {
+  resolveNetwork,
+  getOrCreateWallet,
+  formatWalletBackupNotice,
+  getDeployment,
+} from '../src/network.js';
+import { createWallet, persistWalletState } from '../src/wallet.js';
+import {
+  PRIVATE_STATE_ID,
+  PRIVATE_STATE_STORE,
+  createInitialPrivateState,
+  loadShadowEscrowContract,
+  zkConfigPath,
+} from '../src/shadow-escrow.js';
 
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
-
-// Must match the privateStateId used at deploy time (witness-free → empty state).
-const PRIVATE_STATE_ID = 'helloWorldPrivateState';
-
-// ─── Network configuration ─────────────────────────────────────────────────────
 
 const { network, config: networkConfig } = resolveNetwork();
 const WALLET = getOrCreateWallet(network);
@@ -44,36 +48,30 @@ function isHexAddress(s: unknown): s is string {
 }
 
 async function main() {
-  // 1. Deployment sanity
   const deployment = getDeployment(network);
   if (!deployment) {
-    console.error(`No deploy on file for network ${network}.`);
-    process.exit(1);
+    fail(`No deploy on file for network ${network}.`);
   }
   if (!isHexAddress(deployment.address)) {
-    fail(`Deployment address missing or invalid: ${JSON.stringify(deployment, null, 2)}`);
+    fail(
+      `Deployment address missing or invalid: ${JSON.stringify(deployment, null, 2)}`,
+    );
   }
 
-  // 2. Build wallet and providers
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const zkConfigPath = path.resolve(__dirname, '..', 'contracts', 'managed', 'hello-world');
-  const contractPath = path.join(zkConfigPath, 'contract', 'index.js');
-  if (!fs.existsSync(contractPath)) fail('Compiled contract missing — run `npm run compile`.');
-  const HelloWorld = await import(pathToFileURL(contractPath).href);
-  const compiledContract = CompiledContract.make('hello-world', HelloWorld.Contract).pipe(
-    CompiledContract.withVacantWitnesses,
-    CompiledContract.withCompiledFileAssets(zkConfigPath),
-  );
+  const { module: ShadowEscrow, compiledContract } =
+    await loadShadowEscrowContract();
+  const initialPrivateState = createInitialPrivateState(SEED);
 
-  const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
+  const walletCtx = await createWallet({
+    network,
+    networkConfig,
+    seed: SEED,
+  });
   await walletCtx.wallet.waitForSyncedState();
-  // Persist the sync state — saves time on the next e2e-check invocation in CI
-  // when run against the same persistent wallet directory.
   await persistWalletState(network, walletCtx);
 
   const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
   const walletProvider = {
-    // Midnight.js 4.1.x returns the key objects (CoinPublicKey / EncPublicKey).
     getCoinPublicKey: () => walletCtx.shieldedSecretKeys.coinPublicKey,
     getEncryptionPublicKey: () => walletCtx.shieldedSecretKeys.encryptionPublicKey,
     async balanceTx() {
@@ -84,52 +82,86 @@ async function main() {
     },
   } as any;
 
+  const privateStatePassword =
+    process.env.PRIVATE_STATE_PASSWORD?.trim() ||
+    'Local-Devnet-Development-Placeholder-1';
+
   const providers = {
     privateStateProvider: levelPrivateStateProvider({
-      privateStateStoreName: 'hello-world-state',
+      privateStateStoreName: PRIVATE_STATE_STORE,
       accountId: walletCtx.unshieldedKeystore.getBech32Address().toString(),
-      // SDK requires ≥16 chars. e2e-check is read-only so we don't expose
-      // the env-var override here — match the deploy script's local-devnet default.
-      privateStoragePasswordProvider: () => 'Local-Devnet-Development-Placeholder-1',
+      privateStoragePasswordProvider: () => privateStatePassword,
     }),
-    publicDataProvider: indexerPublicDataProvider(networkConfig.indexer, networkConfig.indexerWS),
+    publicDataProvider: indexerPublicDataProvider(
+      networkConfig.indexer,
+      networkConfig.indexerWS,
+    ),
     zkConfigProvider,
-    proofProvider: httpClientProofProvider(networkConfig.proofServer, zkConfigProvider),
+    proofProvider: httpClientProofProvider(
+      networkConfig.proofServer,
+      zkConfigProvider,
+    ),
     walletProvider,
     midnightProvider: walletProvider,
   };
 
-  // 3. Reconnect to the deployed contract — proves callTx interface is wired
   try {
     await findDeployedContract(providers, {
       contractAddress: deployment.address,
       compiledContract: compiledContract as any,
       privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState: {},
+      initialPrivateState,
     });
   } catch (err: any) {
     await walletCtx.wallet.stop();
     fail(`findDeployedContract threw: ${err?.message ?? err}`);
   }
 
-  // 4. Read the on-chain contract state via the public data provider — proves
-  // the contract is indexed and queryable on the chain itself, not just that
-  // we know how to construct the local handle.
-  const onChainState = await providers.publicDataProvider.queryContractState(deployment.address);
+  const onChainState =
+    await providers.publicDataProvider.queryContractState(deployment.address);
   if (!onChainState) {
     await walletCtx.wallet.stop();
     fail(`queryContractState returned null for ${deployment.address}`);
   }
 
-  console.log(`✅ e2e-check passed`);
+  const publicLedger = ShadowEscrow.ledger(onChainState.data);
+  const { approvalCommitment, approvalCount, approved } = publicLedger;
+
+  if (!(approvalCommitment instanceof Uint8Array) || approvalCommitment.length !== 32) {
+    await walletCtx.wallet.stop();
+    fail('approvalCommitment is missing or is not 32 bytes');
+  }
+
+  const count = Number(approvalCount);
+  if (count !== 0 && count !== 1) {
+    await walletCtx.wallet.stop();
+    fail(`approvalCount should be 0 or 1, got ${String(approvalCount)}`);
+  }
+  if (typeof approved !== 'boolean') {
+    await walletCtx.wallet.stop();
+    fail(`approved should be boolean, got ${typeof approved}`);
+  }
+  if ((approved && count !== 1) || (!approved && count !== 0)) {
+    await walletCtx.wallet.stop();
+    fail(`inconsistent public state: approved=${approved}, approvalCount=${count}`);
+  }
+  if ('approvalSecret' in (publicLedger as Record<string, unknown>)) {
+    await walletCtx.wallet.stop();
+    fail('private approvalSecret leaked into public ledger state');
+  }
+
+  console.log('✅ e2e-check passed');
   console.log(`   contractAddress: ${deployment.address}`);
   console.log(`   network:         ${network}`);
+  console.log(`   approved:        ${approved}`);
+  console.log(`   approvalCount:   ${count}`);
+  console.log('   approvalSecret:  private');
 
   await walletCtx.wallet.stop();
   process.exit(0);
 }
 
-main().catch(async (err) => {
+main().catch((err) => {
   console.error(err);
   process.exit(1);
 });
