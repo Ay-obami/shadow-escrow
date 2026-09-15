@@ -1,0 +1,39 @@
+pragma language_version 0.23;
+
+import CompactStandardLibrary;
+
+// Public ledger state. The raw approval secret is never written on-chain.
+export ledger approvalCommitment: Bytes<32>;
+export ledger approved: Boolean;
+export ledger approvalCount: Uint<8>;
+
+// Private witness supplied from local private state.
+witness approvalSecret(): Bytes<32>;
+
+constructor() {
+  // Intentionally disclose only the commitment derived from the private secret.
+  approvalCommitment = disclose(commitment(approvalSecret()));
+  approved = false;
+  approvalCount = 0;
+}
+
+// Proves knowledge of the private approval secret without revealing it.
+export circuit approve(): [] {
+  assert(!approved, "Milestone already approved");
+  assert(
+    approvalCommitment == commitment(approvalSecret()),
+    "Invalid approval secret"
+  );
+
+  approved = true;
+  approvalCount = 1;
+}
+
+// Domain-separated commitment so this secret cannot be confused with a hash
+// used for another purpose or application.
+export circuit commitment(secret: Bytes<32>): Bytes<32> {
+  return persistentHash<Vector<2, Bytes<32>>>([
+    pad(32, "shadow-escrow:approval:v1"),
+    secret
+  ]);
+}
