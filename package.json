@@ -6,7 +6,7 @@
   "author": "",
   "license": "MIT",
   "scripts": {
-    "compile": "compact compile contracts/hello-world.compact contracts/managed/hello-world",
+    "compile": "compact compile contracts/shadow-escrow.compact contracts/managed/shadow-escrow",
     "build": "npx tsc --noEmit || true",
     "setup": "npx tsx src/setup.ts",
     "deploy": "npx tsx src/deploy.ts",
@@ -16,7 +16,7 @@
     "proof-server:start": "docker compose up -d",
     "proof-server:stop": "docker compose down",
     "clean": "node scripts/clean.mjs",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "tsx --test test/shadow-escrow.test.ts",
     "test:e2e": "tsx scripts/e2e-check.ts"
   },
   "dependencies": {
