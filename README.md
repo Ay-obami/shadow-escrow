@@ -53,6 +53,19 @@ private approval secret
  raw secret never becomes public
 ```
 
+## Verified Preview deployment
+
+ShadowEscrow has been deployed and exercised on Midnight Preview.
+
+- **Network:** `preview`
+- **Contract address:** `d50e59633dae38c7f515aa17322743e6324fd8cceba06233180647f56b449ce9`
+- **Private approval transaction:** `007e7524d6625deeb6bf568b591437e46f0f08a2dab4cc84de3b40a7b7ca0b41bb`
+- **Approval block height:** `874555`
+- **Verified public state:** `approved = true`, `approvalCount = 1`
+- **Private witness:** remains private and is not present in public ledger state.
+
+The post-approval `npm run test:e2e` reconnects to this Preview deployment and reports the same public state while confirming `approvalSecret: private`.
+
 ## Requirements
 
 The project has been tested with:
@@ -102,14 +115,15 @@ The `managed/` output is intentionally committed because it is part of the New M
 
 ## Tests
 
-Run the simulator, witness, privacy, and integration-source tests:
+Run the simulator, witness, privacy, dependency, and integration-source tests:
 
 ```bash
 npm test
 ```
 
-The suite covers:
+The current suite contains **12 passing tests** covering:
 
+- the Midnight `StateValue` runtime is pinned to one compatible implementation;
 - the private approval witness is not public ledger state;
 - `disclose()` is limited to the commitment;
 - the public ledger does not contain the raw secret;
@@ -192,6 +206,7 @@ shadow-escrow/
 │   ├── shadow-escrow.compact
 │   └── managed/shadow-escrow/
 ├── test/
+│   ├── runtime-dependency.test.ts
 │   └── shadow-escrow.test.ts
 ├── scripts/
 │   └── e2e-check.ts
@@ -210,10 +225,10 @@ shadow-escrow/
 
 ## Submission evidence
 
-Before final submission, the repository will include:
+The final submission should include these two screenshots in `screenshots/`:
 
-- `screenshots/compile-success.png` — successful Compact compile with circuits listed.
-- `screenshots/preview-deployment.png` — Preview deployment output with the visible contract address.
+- `screenshots/compile-success.png` — successful `npm run compile` output showing the `approve` circuit.
+- `screenshots/preview-deployment.png` — Preview deployment/e2e output showing network `preview` and contract address `d50e59633dae38c7f515aa17322743e6324fd8cceba06233180647f56b449ce9`.
 
 ## Current MVP scope
 
