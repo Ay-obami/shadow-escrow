@@ -107,9 +107,11 @@ test('constructor stores public commitment but not the raw secret', () => {
   assert.equal(state.approvalCommitment.length, 32);
 
   const secretHex = Buffer.from(secret).toString('hex');
-  const publicJson = JSON.stringify(state, (_key, value) =>
-    value instanceof Uint8Array ? Buffer.from(value).toString('hex') : value,
-  );
+  const publicJson = JSON.stringify(state, (_key, value) => {
+    if (typeof value === 'bigint') return value.toString();
+    if (value instanceof Uint8Array) return Buffer.from(value).toString('hex');
+    return value;
+  });
   assert.equal(publicJson.includes(secretHex), false);
   assert.equal('approvalSecret' in (state as Record<string, unknown>), false);
 });
