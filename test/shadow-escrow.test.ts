@@ -71,13 +71,14 @@ class ShadowEscrowSimulator {
   }
 }
 
+function readProjectFile(...parts: string[]): string {
+  const file = path.resolve(process.cwd(), ...parts);
+  assert.equal(existsSync(file), true, `${parts.join('/')} must exist`);
+  return readFileSync(file, 'utf8');
+}
+
 function readContractSource(): string {
-  assert.equal(
-    existsSync(contractPath),
-    true,
-    'contracts/shadow-escrow.compact must exist',
-  );
-  return readFileSync(contractPath, 'utf8');
+  return readProjectFile('contracts', 'shadow-escrow.compact');
 }
 
 test('approval secret is declared as a private witness, never public ledger state', () => {
@@ -187,4 +188,38 @@ test('shared ShadowEscrow config derives stable private state from the wallet se
     shadowEscrow.createInitialPrivateState(seedA).approvalSecret,
     secretA1,
   );
+});
+
+test('deploy script uses ShadowEscrow witnesses and deterministic private state', () => {
+  const source = readProjectFile('src', 'deploy.ts');
+
+  assert.match(source, /from ['"]\.\/shadow-escrow\.js['"]/);
+  assert.match(source, /PRIVATE_STATE_STORE/);
+  assert.match(source, /loadShadowEscrowContract\s*\(/);
+  assert.match(source, /createInitialPrivateState\s*\(\s*SEED\s*\)/);
+  assert.doesNotMatch(source, /hello-world|HelloWorld|helloWorldPrivateState|withVacantWitnesses/);
+  assert.doesNotMatch(source, /initialPrivateState\s*:\s*\{\s*\}/);
+});
+
+test('CLI exposes private approval and public ShadowEscrow state', () => {
+  const source = readProjectFile('src', 'cli.ts');
+
+  assert.match(source, /from ['"]\.\/shadow-escrow\.js['"]/);
+  assert.match(source, /callTx\.approve\s*\(/);
+  assert.match(source, /approvalCommitment/);
+  assert.match(source, /approvalCount/);
+  assert.match(source, /approved/);
+  assert.match(source, /createInitialPrivateState\s*\(\s*SEED\s*\)/);
+  assert.doesNotMatch(source, /Store a message|storeMessage|HelloWorld|hello-world|helloWorldPrivateState/);
+});
+
+test('e2e reconnects with ShadowEscrow private state and validates public ledger', () => {
+  const source = readProjectFile('scripts', 'e2e-check.ts');
+
+  assert.match(source, /from ['"]\.\.\/src\/shadow-escrow\.js['"]/);
+  assert.match(source, /createInitialPrivateState\s*\(\s*SEED\s*\)/);
+  assert.match(source, /approvalCommitment/);
+  assert.match(source, /approvalCount/);
+  assert.match(source, /approved/);
+  assert.doesNotMatch(source, /HelloWorld|hello-world|helloWorldPrivateState|withVacantWitnesses/);
 });
