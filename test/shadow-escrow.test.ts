@@ -159,3 +159,32 @@ test('production witness module exposes the private-state factory and witness', 
     'approvalSecret witness must be implemented',
   );
 });
+
+test('shared ShadowEscrow config derives stable private state from the wallet seed', async () => {
+  let shadowEscrow: any;
+  try {
+    shadowEscrow = await import('../src/shadow-escrow.ts');
+  } catch {
+    shadowEscrow = undefined;
+  }
+
+  assert.equal(typeof shadowEscrow?.deriveApprovalSecret, 'function');
+  assert.equal(typeof shadowEscrow?.createInitialPrivateState, 'function');
+  assert.equal(typeof shadowEscrow?.loadShadowEscrowContract, 'function');
+  assert.equal(shadowEscrow?.PRIVATE_STATE_ID, 'shadowEscrowPrivateState');
+  assert.equal(shadowEscrow?.PRIVATE_STATE_STORE, 'shadow-escrow-state');
+
+  const seedA = '11'.repeat(64);
+  const seedB = '22'.repeat(64);
+  const secretA1 = shadowEscrow.deriveApprovalSecret(seedA);
+  const secretA2 = shadowEscrow.deriveApprovalSecret(seedA);
+  const secretB = shadowEscrow.deriveApprovalSecret(seedB);
+
+  assert.equal(secretA1.length, 32);
+  assert.deepEqual(secretA1, secretA2);
+  assert.notDeepEqual(secretA1, secretB);
+  assert.deepEqual(
+    shadowEscrow.createInitialPrivateState(seedA).approvalSecret,
+    secretA1,
+  );
+});
