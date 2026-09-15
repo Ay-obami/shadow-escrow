@@ -15,13 +15,10 @@ build/
 .env.test.local
 .env.production.local
 
-# Contract artifacts
-contracts/managed/
+# Compact managed artifacts are intentionally tracked for the challenge.
 
 # Deployment info
 deployment.json
-
-# Wallet seed (sensitive)
 
 # OS generated files
 .DS_Store
@@ -46,19 +43,16 @@ pids/
 # Coverage directory
 coverage/
 
-# Private state
+# Private state databases
 *-state/
 
 # Temporary files
 tmp/
 temp/
 
-# Midnight network state (per-network seeds, deploy addresses)
+# Midnight network state (contains local wallet/deploy metadata)
 .midnight-state.json
 
-# Midnight wallet sync state (per-network serialized wallet state cache)
+# Midnight wallet sync state cache
 .midnight-wallet-state/
 midnight-level-db/
-
-.midnight-state.json
-.midnight-wallet-state/
