@@ -4,6 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { CompiledContract } from '@midnight-ntwrk/midnight-js-protocol/compact-js';
+import type { Contract } from '../contracts/managed/shadow-escrow/contract/index.js';
 import {
   createShadowEscrowPrivateState,
   witnesses,
@@ -48,12 +49,13 @@ export async function loadShadowEscrowContract() {
     throw new Error('Contract not compiled! Run: npm run compile');
   }
 
-  const module = await import(pathToFileURL(contractPath).href);
-  const compiledContract = CompiledContract.make(
+  const module: typeof import('../contracts/managed/shadow-escrow/contract/index.js') =
+    await import(pathToFileURL(contractPath).href);
+  const compiledContract = CompiledContract.make<Contract<ShadowEscrowPrivateState>>(
     'shadow-escrow',
     module.Contract,
   ).pipe(
-    CompiledContract.withWitnesses(witnesses as any),
+    CompiledContract.withWitnesses(witnesses),
     CompiledContract.withCompiledFileAssets(zkConfigPath),
   );
 
