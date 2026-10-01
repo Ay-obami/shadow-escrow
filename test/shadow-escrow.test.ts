@@ -44,6 +44,11 @@ class ShadowEscrowSimulator {
         { approvalSecret: secret },
         '0'.repeat(64),
       ),
+      new Uint8Array(32).fill(3),
+      25n,
+      { bytes: new Uint8Array(32).fill(4) },
+      { bytes: new Uint8Array(32).fill(5) },
+      1_000n,
     );
 
     this.circuitContext = {
@@ -63,6 +68,11 @@ class ShadowEscrowSimulator {
 
   switchSecret(secret: Uint8Array): void {
     this.circuitContext.currentPrivateState = { approvalSecret: secret };
+  }
+
+  fund(): Ledger {
+    this.circuitContext = this.contract.impureCircuits.fund(this.circuitContext).context;
+    return this.getLedger();
   }
 
   approve(): Ledger {
@@ -103,7 +113,8 @@ test('constructor stores public commitment but not the raw secret', () => {
   const sim = new ShadowEscrowSimulator(secret);
   const state = sim.getLedger();
 
-  assert.equal(state.approved, false);
+  assert.equal(Number(state.status), 0);
+  assert.equal(Number(state.version), 2);
   assert.equal(Number(state.approvalCount), 0);
   assert.equal(state.approvalCommitment.length, 32);
 
@@ -120,14 +131,16 @@ test('constructor stores public commitment but not the raw secret', () => {
 test('valid private witness approves the milestone exactly once', () => {
   const secret = new Uint8Array(32).fill(7);
   const sim = new ShadowEscrowSimulator(secret);
+  sim.fund();
 
   const state = sim.approve();
-  assert.equal(state.approved, true);
+  assert.equal(Number(state.status), 2);
   assert.equal(Number(state.approvalCount), 1);
 });
 
 test('wrong private witness is rejected', () => {
   const sim = new ShadowEscrowSimulator(new Uint8Array(32).fill(7));
+  sim.fund();
   sim.switchSecret(new Uint8Array(32).fill(9));
 
   assert.throws(() => sim.approve(), /Invalid approval secret/);
@@ -136,15 +149,16 @@ test('wrong private witness is rejected', () => {
 test('approval cannot be replayed', () => {
   const secret = new Uint8Array(32).fill(7);
   const sim = new ShadowEscrowSimulator(secret);
+  sim.fund();
   sim.approve();
 
-  assert.throws(() => sim.approve(), /Milestone already approved/);
+  assert.throws(() => sim.approve(), /Escrow is not Funded/);
 });
 
 test('production witness module exposes the private-state factory and witness', async () => {
   let witnessModule: any;
   try {
-    witnessModule = await import('../src/witnesses.ts');
+    witnessModule = await import('../src/witnesses.js');
   } catch {
     witnessModule = undefined;
   }
@@ -164,7 +178,7 @@ test('production witness module exposes the private-state factory and witness', 
 test('shared ShadowEscrow config derives stable private state from the wallet seed', async () => {
   let shadowEscrow: any;
   try {
-    shadowEscrow = await import('../src/shadow-escrow.ts');
+    shadowEscrow = await import('../src/shadow-escrow.js');
   } catch {
     shadowEscrow = undefined;
   }
@@ -190,27 +204,35 @@ test('shared ShadowEscrow config derives stable private state from the wallet se
   );
 });
 
-test('deploy script uses ShadowEscrow witnesses and deterministic private state', () => {
+test('deploy script supplies immutable v2 terms and signs native balancing recipes', () => {
   const source = readProjectFile('src', 'deploy.ts');
 
-  assert.match(source, /from ['"]\.\/shadow-escrow\.js['"]/);
-  assert.match(source, /PRIVATE_STATE_STORE/);
-  assert.match(source, /loadShadowEscrowContract\s*\(/);
+  assert.match(source, /parseFundedEscrowTerms\s*\(/);
+  assert.match(source, /resolvePrivateStatePassword\s*\(/);
   assert.match(source, /createInitialPrivateState\s*\(\s*SEED\s*\)/);
-  assert.doesNotMatch(source, /hello-world|HelloWorld|helloWorldPrivateState|withVacantWitnesses/);
-  assert.doesNotMatch(source, /initialPrivateState\s*:\s*\{\s*\}/);
+  assert.match(source, /signRecipe\s*\(/);
+  assert.match(source, /unshieldedKeystore\.signData/);
+  assert.match(source, /tokenKindsToBalance:\s*['"]all['"]/);
+  for (const term of ['terms.tokenColor', 'terms.amount', 'terms.payee', 'terms.refundRecipient', 'terms.deadline']) {
+    assert.match(source, new RegExp(term.replace('.', '\\.') ));
+  }
+  assert.doesNotMatch(source, /args:\s*\[\s*\]/);
+  assert.doesNotMatch(source, /withVacantWitnesses|initialPrivateState\s*:\s*\{\s*\}/);
 });
 
-test('CLI exposes private approval and public ShadowEscrow state', () => {
+test('CLI exposes all v2 actions, verifies credential/version, and confirms indexed state', () => {
   const source = readProjectFile('src', 'cli.ts');
 
-  assert.match(source, /from ['"]\.\/shadow-escrow\.js['"]/);
-  assert.match(source, /callTx\.approve\s*\(/);
-  assert.match(source, /approvalCommitment/);
-  assert.match(source, /approvalCount/);
-  assert.match(source, /approved/);
+  for (const action of ['fund', 'approve', 'settle', 'refund', 'cancel']) {
+    assert.match(source, new RegExp(`callTx\\.${action}\\s*\\(`));
+  }
+  assert.match(source, /pureCircuits\.commitment/);
+  assert.match(source, /publicLedger\.version/);
+  assert.match(source, /waitForStatus\s*\(/);
+  assert.match(source, /signRecipe\s*\(/);
+  assert.match(source, /refund goes only to/);
   assert.match(source, /createInitialPrivateState\s*\(\s*SEED\s*\)/);
-  assert.doesNotMatch(source, /Store a message|storeMessage|HelloWorld|hello-world|helloWorldPrivateState/);
+  assert.doesNotMatch(source, /hello-world|HelloWorld|helloWorldPrivateState/);
 });
 
 test('e2e reconnects with ShadowEscrow private state and validates public ledger', () => {
@@ -220,6 +242,9 @@ test('e2e reconnects with ShadowEscrow private state and validates public ledger
   assert.match(source, /createInitialPrivateState\s*\(\s*SEED\s*\)/);
   assert.match(source, /approvalCommitment/);
   assert.match(source, /approvalCount/);
-  assert.match(source, /approved/);
+  assert.match(source, /publicLedger\.version/);
+  assert.match(source, /publicLedger\.status/);
+  assert.match(source, /publicLedger\.amount/);
+  assert.match(source, /publicLedger\.deadline/);
   assert.doesNotMatch(source, /HelloWorld|hello-world|helloWorldPrivateState|withVacantWitnesses/);
 });

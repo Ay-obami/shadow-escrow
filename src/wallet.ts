@@ -57,11 +57,34 @@ function deriveKeys(seed: string) {
   return result.keys;
 }
 
+export interface WalletPublicIdentity {
+  accountId: string;
+  userAddressHex: string;
+  userAddressBytes: Uint8Array;
+}
+
+export function deriveWalletPublicIdentity(
+  networkConfig: NetworkConfig,
+  seed: string,
+): WalletPublicIdentity {
+  setNetworkId(networkConfig.networkId);
+  const keys = deriveKeys(seed);
+  const networkId = getNetworkId();
+  const keystore = createKeystore(keys[Roles.NightExternal], networkId);
+  const userAddressBytes = ledger.encodeUserAddress(keystore.getAddress());
+  return {
+    accountId: keystore.getBech32Address().toString(),
+    userAddressHex: Buffer.from(userAddressBytes).toString('hex'),
+    userAddressBytes,
+  };
+}
+
 export interface WalletContext {
   wallet: Awaited<ReturnType<typeof WalletFacade.init>>;
   shieldedSecretKeys: ReturnType<typeof ledger.ZswapSecretKeys.fromSeed>;
   dustSecretKey: ReturnType<typeof ledger.DustSecretKey.fromSeed>;
   unshieldedKeystore: ReturnType<typeof createKeystore>;
+  accountId: string;
   restored: { shielded: boolean; unshielded: boolean; dust: boolean };
 }
 
@@ -97,10 +120,11 @@ export async function createWallet(opts: CreateWalletOptions): Promise<WalletCon
   const shieldedSecretKeys = ledger.ZswapSecretKeys.fromSeed(keys[Roles.Zswap]);
   const dustSecretKey = ledger.DustSecretKey.fromSeed(keys[Roles.Dust]);
   const unshieldedKeystore = createKeystore(keys[Roles.NightExternal], networkId);
+  const accountId = unshieldedKeystore.getBech32Address().toString();
 
   const saved: PersistedWalletState = opts.restore === false
     ? {}
-    : loadWalletState(opts.network, { cwd: opts.cwd });
+    : loadWalletState(opts.network, accountId, { cwd: opts.cwd });
 
   const restored = { shielded: false, unshielded: false, dust: false };
 
@@ -161,7 +185,14 @@ export async function createWallet(opts: CreateWalletOptions): Promise<WalletCon
 
   await wallet.start(shieldedSecretKeys, dustSecretKey);
 
-  return { wallet, shieldedSecretKeys, dustSecretKey, unshieldedKeystore, restored };
+  return {
+    wallet,
+    shieldedSecretKeys,
+    dustSecretKey,
+    unshieldedKeystore,
+    accountId,
+    restored,
+  };
 }
 
 /**
@@ -191,5 +222,5 @@ export async function persistWalletState(
     }
   }
 
-  saveWalletState(network, next, { cwd });
+  saveWalletState(network, ctx.accountId, next, { cwd });
 }

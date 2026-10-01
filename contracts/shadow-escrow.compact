@@ -2,38 +2,72 @@ pragma language_version 0.23;
 
 import CompactStandardLibrary;
 
-// Public ledger state. The raw approval secret is never written on-chain.
+export ledger tokenColor: Bytes<32>;
+export ledger amount: Uint<128>;
+export ledger payee: UserAddress;
+export ledger refundRecipient: UserAddress;
+export ledger deadline: Uint<64>;
+export ledger status: Uint<8>;
 export ledger approvalCommitment: Bytes<32>;
-export ledger approved: Boolean;
 export ledger approvalCount: Uint<8>;
+export ledger version: Uint<8>;
 
-// Private witness supplied from local private state.
 witness approvalSecret(): Bytes<32>;
 
-constructor() {
-  // Intentionally disclose only the commitment derived from the private secret.
+constructor(_tokenColor: Bytes<32>, _amount: Uint<128>, _payee: UserAddress, _refundRecipient: UserAddress, _deadline: Uint<64>) {
+  assert(_amount > 0, "Amount must be positive");
+  assert(_payee.bytes != default<Bytes<32>>, "Payee required");
+  assert(_refundRecipient.bytes != default<Bytes<32>>, "Refund recipient required");
+  assert(_payee.bytes != _refundRecipient.bytes, "Recipients must differ");
+  tokenColor = disclose(_tokenColor);
+  amount = disclose(_amount);
+  payee = disclose(_payee);
+  refundRecipient = disclose(_refundRecipient);
+  deadline = disclose(_deadline);
+  status = 0;
   approvalCommitment = disclose(commitment(approvalSecret()));
-  approved = false;
   approvalCount = 0;
+  version = 2;
 }
 
-// Proves knowledge of the private approval secret without revealing it.
-export circuit approve(): [] {
-  assert(!approved, "Milestone already approved");
-  assert(
-    approvalCommitment == commitment(approvalSecret()),
-    "Invalid approval secret"
-  );
+export circuit fund(): [] {
+  assert(status == 0, "Escrow is not Created");
+  assert(blockTimeLt(deadline), "Funding deadline reached");
+  receiveUnshielded(tokenColor, amount);
+  status = 1;
+}
 
-  approved = true;
+export circuit approve(): [] {
+  assert(status == 1, "Escrow is not Funded");
+  assert(blockTimeLt(deadline), "Approval deadline reached");
+  assert(approvalCommitment == commitment(approvalSecret()), "Invalid approval secret");
+  status = 2;
   approvalCount = 1;
 }
 
-// Domain-separated commitment so this secret cannot be confused with a hash
-// used for another purpose or application.
+export circuit settle(): [] {
+  assert(status == 2, "Escrow is not Approved");
+  assert(unshieldedBalanceGte(tokenColor, amount), "Insufficient escrow balance");
+  sendUnshielded(tokenColor, amount, right<ContractAddress, UserAddress>(payee));
+  status = 3;
+}
+export circuit refund(): [] {
+  assert(status == 1, "Escrow is not Funded");
+  assert(blockTimeGte(deadline), "Refund not available yet");
+  assert(unshieldedBalanceGte(tokenColor, amount), "Insufficient escrow balance");
+  sendUnshielded(tokenColor, amount, right<ContractAddress, UserAddress>(refundRecipient));
+  status = 4;
+}
+
+export circuit cancel(): [] {
+  assert(status == 0, "Escrow is not Created");
+  assert(blockTimeGte(deadline), "Cancellation not available yet");
+  status = 5;
+}
+
 export circuit commitment(secret: Bytes<32>): Bytes<32> {
   return persistentHash<Vector<2, Bytes<32>>>([
-    pad(32, "shadow-escrow:approval:v1"),
+    pad(32, "shadow-escrow:approval:v2"),
     secret
   ]);
 }
