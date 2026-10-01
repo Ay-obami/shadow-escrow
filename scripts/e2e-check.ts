@@ -1,9 +1,5 @@
-/**
- * End-to-end smoke check for ShadowEscrow.
- *
- * Reconnects with the same deterministic private witness state used at deploy
- * time, reads public ledger state, and exits 0 on success.
- */
+/** Read-only reconnect and public-state validation for ShadowEscrow v2. */
+import { Buffer } from 'node:buffer';
 import { WebSocket } from 'ws';
 
 import { findDeployedContract } from '@midnight-ntwrk/midnight-js-contracts';
@@ -13,10 +9,10 @@ import { levelPrivateStateProvider } from '@midnight-ntwrk/midnight-js-level-pri
 import { NodeZkConfigProvider } from '@midnight-ntwrk/midnight-js-node-zk-config-provider';
 
 import {
-  resolveNetwork,
-  getOrCreateWallet,
   formatWalletBackupNotice,
   getDeployment,
+  getOrCreateWallet,
+  resolveNetwork,
 } from '../src/network.js';
 import { createWallet, persistWalletState } from '../src/wallet.js';
 import {
@@ -26,6 +22,7 @@ import {
   loadShadowEscrowContract,
   zkConfigPath,
 } from '../src/shadow-escrow.js';
+import { resolvePrivateStatePassword } from '../src/funded-config.js';
 
 // @ts-expect-error wallet sync requires WebSocket
 globalThis.WebSocket = WebSocket;
@@ -33,40 +30,38 @@ globalThis.WebSocket = WebSocket;
 const { network, config: networkConfig } = resolveNetwork();
 const WALLET = getOrCreateWallet(network);
 const SEED = WALLET.seed;
-{
-  const notice = formatWalletBackupNotice(WALLET, network);
-  if (notice) console.log(notice);
-}
+const notice = formatWalletBackupNotice(WALLET, network);
+if (notice) console.log(notice);
 
 function fail(msg: string): never {
   console.error(`❌ e2e-check failed: ${msg}`);
   process.exit(1);
 }
 
-function isHexAddress(s: unknown): s is string {
-  return typeof s === 'string' && /^[0-9a-fA-F]+$/.test(s) && s.length >= 32;
+function isHexAddress(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-fA-F]+$/.test(value) &&
+    value.length >= 32
+  );
+}
+
+function isNonZero(bytes: Uint8Array): boolean {
+  return bytes.some((byte) => byte !== 0);
 }
 
 async function main() {
   const deployment = getDeployment(network);
-  if (!deployment) {
-    fail(`No deploy on file for network ${network}.`);
-  }
+  if (!deployment) fail(`No deploy on file for network ${network}.`);
   if (!isHexAddress(deployment.address)) {
-    fail(
-      `Deployment address missing or invalid: ${JSON.stringify(deployment, null, 2)}`,
-    );
+    fail(`Deployment address missing or invalid: ${JSON.stringify(deployment)}`);
   }
 
   const { module: ShadowEscrow, compiledContract } =
     await loadShadowEscrowContract();
   const initialPrivateState = createInitialPrivateState(SEED);
 
-  const walletCtx = await createWallet({
-    network,
-    networkConfig,
-    seed: SEED,
-  });
+  const walletCtx = await createWallet({ network, networkConfig, seed: SEED });
   await walletCtx.wallet.waitForSyncedState();
   await persistWalletState(network, walletCtx);
 
@@ -82,14 +77,11 @@ async function main() {
     },
   } as any;
 
-  const privateStatePassword =
-    process.env.PRIVATE_STATE_PASSWORD?.trim() ||
-    'Local-Devnet-Development-Placeholder-1';
-
+  const privateStatePassword = resolvePrivateStatePassword(network);
   const providers = {
     privateStateProvider: levelPrivateStateProvider({
       privateStateStoreName: PRIVATE_STATE_STORE,
-      accountId: walletCtx.unshieldedKeystore.getBech32Address().toString(),
+      accountId: walletCtx.accountId,
       privateStoragePasswordProvider: () => privateStatePassword,
     }),
     publicDataProvider: indexerPublicDataProvider(
@@ -105,18 +97,6 @@ async function main() {
     midnightProvider: walletProvider,
   };
 
-  try {
-    await findDeployedContract(providers, {
-      contractAddress: deployment.address,
-      compiledContract: compiledContract as any,
-      privateStateId: PRIVATE_STATE_ID,
-      initialPrivateState,
-    });
-  } catch (err: any) {
-    await walletCtx.wallet.stop();
-    fail(`findDeployedContract threw: ${err?.message ?? err}`);
-  }
-
   const onChainState =
     await providers.publicDataProvider.queryContractState(deployment.address);
   if (!onChainState) {
@@ -125,25 +105,63 @@ async function main() {
   }
 
   const publicLedger = ShadowEscrow.ledger(onChainState.data);
-  const { approvalCommitment, approvalCount, approved } = publicLedger;
-
-  if (!(approvalCommitment instanceof Uint8Array) || approvalCommitment.length !== 32) {
+  if (Number(publicLedger.version) !== 2) {
     await walletCtx.wallet.stop();
-    fail('approvalCommitment is missing or is not 32 bytes');
+    fail(`expected funded contract version 2, got ${String(publicLedger.version)}`);
   }
 
-  const count = Number(approvalCount);
-  if (count !== 0 && count !== 1) {
+  const expectedCommitment =
+    ShadowEscrow.pureCircuits.commitment(initialPrivateState.approvalSecret);
+  if (
+    !Buffer.from(expectedCommitment).equals(
+      Buffer.from(publicLedger.approvalCommitment),
+    )
+  ) {
     await walletCtx.wallet.stop();
-    fail(`approvalCount should be 0 or 1, got ${String(approvalCount)}`);
+    fail('private approval credential does not match the deployed commitment');
   }
-  if (typeof approved !== 'boolean') {
+
+  try {
+    await findDeployedContract(providers, {
+      contractAddress: deployment.address,
+      compiledContract: compiledContract as any,
+      privateStateId: PRIVATE_STATE_ID,
+      initialPrivateState,
+    });
+  } catch (error: any) {
     await walletCtx.wallet.stop();
-    fail(`approved should be boolean, got ${typeof approved}`);
+    fail(`findDeployedContract threw: ${error?.message ?? error}`);
   }
-  if ((approved && count !== 1) || (!approved && count !== 0)) {
+
+  if (!(publicLedger.tokenColor instanceof Uint8Array) || publicLedger.tokenColor.length !== 32) {
     await walletCtx.wallet.stop();
-    fail(`inconsistent public state: approved=${approved}, approvalCount=${count}`);
+    fail('tokenColor must be 32 bytes');
+  }
+  if (publicLedger.amount <= 0n) {
+    await walletCtx.wallet.stop();
+    fail(`amount must be positive, got ${String(publicLedger.amount)}`);
+  }
+  if (
+    !isNonZero(publicLedger.payee.bytes) ||
+    !isNonZero(publicLedger.refundRecipient.bytes) ||
+    Buffer.from(publicLedger.payee.bytes).equals(
+      Buffer.from(publicLedger.refundRecipient.bytes),
+    )
+  ) {
+    await walletCtx.wallet.stop();
+    fail('payee/refund destinations are zero or not distinct');
+  }
+
+  const status = Number(publicLedger.status);
+  if (!Number.isInteger(status) || status < 0 || status > 5) {
+    await walletCtx.wallet.stop();
+    fail(`invalid status: ${String(publicLedger.status)}`);
+  }
+  const count = Number(publicLedger.approvalCount);
+  const expectedCount = status === 2 || status === 3 ? 1 : 0;
+  if (count !== expectedCount) {
+    await walletCtx.wallet.stop();
+    fail(`inconsistent status/approvalCount: status=${status}, count=${count}`);
   }
   if ('approvalSecret' in (publicLedger as Record<string, unknown>)) {
     await walletCtx.wallet.stop();
@@ -153,15 +171,18 @@ async function main() {
   console.log('✅ e2e-check passed');
   console.log(`   contractAddress: ${deployment.address}`);
   console.log(`   network:         ${network}`);
-  console.log(`   approved:        ${approved}`);
+  console.log(`   version:         ${publicLedger.version.toString()}`);
+  console.log(`   status:          ${publicLedger.status.toString()}`);
+  console.log(`   amount:          ${publicLedger.amount.toString()}`);
+  console.log(`   deadline:        ${publicLedger.deadline.toString()}`);
   console.log(`   approvalCount:   ${count}`);
-  console.log('   approvalSecret:  private');
+  console.log('   approvalSecret:  private + commitment verified');
 
   await walletCtx.wallet.stop();
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch((error) => {
+  console.error(error);
   process.exit(1);
 });

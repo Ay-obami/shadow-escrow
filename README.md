@@ -1,235 +1,195 @@
 # ShadowEscrow
 
-ShadowEscrow is a privacy-first milestone approval prototype built on Midnight with Compact. It demonstrates how a client can prove knowledge of a private approval credential without publishing that credential on-chain. The New Moon MVP intentionally focuses on the privacy primitive rather than token custody: a private witness authorizes a one-time public milestone approval, while the underlying secret remains local.
+ShadowEscrow is a funded milestone escrow prototype on Midnight built with Compact. Version 2 combines real native-token custody with a privacy-preserving approval credential: the escrow terms and lifecycle are public, while the credential that authorizes approval stays in Midnight private state.
 
-## Product idea
+## What v2 proves
 
-Freelance and service agreements often need an auditable milestone approval without exposing every authorization detail publicly. ShadowEscrow lets a client keep an approval credential private, prove knowledge of it in zero knowledge, and publish only the resulting milestone status. Future versions can extend the same model to escrowed payments, multiple milestones, confidential dispute evidence, selective arbitrator disclosure, and privacy-preserving reputation.
+The current contract has a complete single-milestone lifecycle:
+
+```text
+Created ──fund()──> Funded ──approve()──> Approved ──settle()──> Settled
+   │                   │
+   │                   └── deadline reached ──refund()──> Refunded
+   └── deadline reached ──cancel()──> Cancelled
+```
+
+The immutable public terms are `tokenColor`, `amount`, `payee`, `refundRecipient`, and `deadline`. Funding must provide exactly the configured unshielded asset and amount. Approval requires the private witness before the deadline. Once approval succeeds, settlement remains available after the deadline because the payee's claim has vested.
 
 ## Privacy model
 
-ShadowEscrow separates private witness data from public ledger state.
-
-### Private witness
-
-`approvalSecret(): Bytes<32>` is supplied from local Midnight private state. The TypeScript client derives a deterministic 32-byte secret from the already-private wallet seed and stores it through Midnight's private-state provider. The raw secret is never written to the public ledger.
-
-### Public ledger state
-
-The contract exposes only:
-
-- `approvalCommitment: Bytes<32>` — a domain-separated commitment to the private approval secret.
-- `approved: Boolean` — whether the milestone has been approved.
-- `approvalCount: Uint<8>` — `0` before approval and `1` after the one permitted approval.
-
-### Deliberate disclosure
-
-The constructor deliberately uses `disclose()` only on the commitment derived from the private witness:
+`approvalSecret(): Bytes<32>` is a private witness derived deterministically from the wallet seed. The constructor publishes only a domain-separated commitment:
 
 ```compact
 approvalCommitment = disclose(commitment(approvalSecret()));
 ```
 
-The raw `approvalSecret()` is never passed to `disclose()`. The `approve()` circuit proves that the current private witness matches the public commitment, rejects replay, and then changes only the public approval state.
+The raw approval secret is never a ledger field and is never disclosed. `approve()` proves that the private witness matches the public commitment, changes `status` from `Funded` to `Approved`, and sets `approvalCount` to 1.
 
-## Contract flow
+Public state includes:
 
-```text
-private approval secret
-        │
-        ▼
-  Compact witness
-        │
-        ▼
- commitment(secret) ──────► public approvalCommitment
-        │
-        ▼
- approve() proves equality
-        │
-        ▼
- approved = true
- approvalCount = 1
+- immutable escrow terms: token, amount, payee, refund recipient, deadline;
+- lifecycle `status` and `version = 2`;
+- `approvalCommitment` and `approvalCount`.
 
- raw secret never becomes public
-```
+## Historical v1 Preview evidence
 
-## Verified Preview deployment
+The original milestone-only v1 contract was deployed and exercised on Midnight Preview during the hackathon:
 
-ShadowEscrow has been deployed and exercised on Midnight Preview.
+- network: `preview`
+- v1 contract: `d50e59633dae38c7f515aa17322743e6324fd8cceba06233180647f56b449ce9`
+- approval transaction: `007e7524d6625deeb6bf568b591437e46f0f08a2dab4cc84de3b40a7b7ca0b41bb`
+- approval block: `874555`
 
-- **Network:** `preview`
-- **Contract address:** `d50e59633dae38c7f515aa17322743e6324fd8cceba06233180647f56b449ce9`
-- **Private approval transaction:** `007e7524d6625deeb6bf568b591437e46f0f08a2dab4cc84de3b40a7b7ca0b41bb`
-- **Approval block height:** `874555`
-- **Verified public state:** `approved = true`, `approvalCount = 1`
-- **Private witness:** remains private and is not present in public ledger state.
-
-The post-approval `npm run test:e2e` reconnects to this Preview deployment and reports the same public state while confirming `approvalSecret: private`.
+That address is **v1 only**. The v2 CLI and e2e check deliberately reject it because v2 has different constructor arguments and public state. The archived v1 Compact source is kept at `contracts/archive/v1/shadow-escrow.compact`.
 
 ## Requirements
 
-The project has been tested with:
+Tested toolchain:
 
 - Node.js 22
 - Docker + Docker Compose
-- Compact CLI/devtools `0.5.2`
-- Compact compiler `0.31.1`
+- Compact CLI/devtools 0.5.2
+- Compact compiler 0.31.1
 
-## Install
+Install dependencies with `npm install`.
 
-```bash
-npm install
-```
+## Build and test
 
-Verify the toolchain:
-
-```bash
-node --version
-docker --version
-docker compose version
-compact --version
-compact compile --version
-```
-
-## Compile
+Compile Compact and regenerate the managed contract artifacts:
 
 ```bash
 npm run compile
 ```
 
-The compiler writes generated contract code, proving/verifying keys, and ZKIR into:
+The tracked managed output includes generated TypeScript/JavaScript, ZKIR, and prover/verifier keys for `fund`, `approve`, `settle`, `refund`, and `cancel`.
 
-```text
-contracts/managed/shadow-escrow/
-├── compiler/
-├── contract/
-├── keys/
-│   ├── approve.prover
-│   └── approve.verifier
-└── zkir/
-    ├── approve.bzkir
-    └── approve.zkir
-```
-
-The `managed/` output is intentionally committed because it is part of the New Moon submission requirements.
-
-## Tests
-
-Run the simulator, witness, privacy, dependency, and integration-source tests:
+Run TypeScript validation and the full regression suite:
 
 ```bash
+npm run build
+npm run typecheck:all
 npm test
 ```
 
-The current suite contains **12 passing tests** covering:
+The current suite has 38 passing tests covering constructor bounds, exact funding inputs, deadline edges, witness rejection, replay prevention, settlement, refund, cancellation, generated API parity, account-scoped wallet cache persistence, and legacy privacy regressions.
 
-- the Midnight `StateValue` runtime is pinned to one compatible implementation;
-- the private approval witness is not public ledger state;
-- `disclose()` is limited to the commitment;
-- the public ledger does not contain the raw secret;
-- a valid private witness approves exactly once;
-- a wrong private witness is rejected;
-- replay is rejected;
-- deploy/CLI/e2e flows use the same deterministic private state.
+## Configure a funded escrow
 
-After deployment, run the network smoke test:
+Recipient arguments are raw 32-byte Midnight `UserAddress` values, not Bech32 strings. To print the current wallet's public identity without syncing to the network:
 
 ```bash
-npm run test:e2e
+npm run wallet-info -- --network preview
 ```
 
-It reconnects to the deployed contract with the same private witness state and validates the public `approvalCommitment`, `approved`, and `approvalCount` fields.
+A newly generated public-network wallet may print its recovery phrase once so it can be backed up. The command never prints the raw seed, private key, or approval secret.
+
+Deploy requires all immutable terms, supplied either as CLI flags or environment variables:
+
+```bash
+npm run deploy -- \
+  --network preview \
+  --token-color <64-hex> \
+  --amount <uint128> \
+  --payee <64-hex-user-address> \
+  --refund-recipient <64-hex-user-address> \
+  --deadline <future-unix-seconds>
+```
+
+Equivalent environment variables are `SHADOW_ESCROW_TOKEN_COLOR`, `SHADOW_ESCROW_AMOUNT`, `SHADOW_ESCROW_PAYEE`, `SHADOW_ESCROW_REFUND_RECIPIENT`, and `SHADOW_ESCROW_DEADLINE`.
+
+For `preview` or `preprod`, set a private-state storage password of at least 16 characters:
+
+```bash
+export PRIVATE_STATE_PASSWORD='use-a-local-secret-manager-value'
+```
+
+Do not commit that value.
+
+`npm run setup -- ...` forwards the same flags after starting the required local services and compiling the contract.
 
 ## Local development
 
-Start the local Midnight node, indexer, and proof server, compile, and deploy:
+Example local deployment:
 
 ```bash
-npm run setup
+npm run setup -- \
+  --token-color <64-hex> \
+  --amount <uint128> \
+  --payee <64-hex-user-address> \
+  --refund-recipient <64-hex-user-address> \
+  --deadline <future-unix-seconds>
 ```
 
-Then verify the deployment:
-
-```bash
-npm run test:e2e
-```
-
-Interact with it:
+Then use:
 
 ```bash
 npm run cli
+npm run test:e2e
 ```
 
-The CLI can submit the private `approve()` proof, read public ShadowEscrow state, and inspect wallet balances.
+The CLI exposes the full v2 lifecycle and displays the authoritative indexed state before each action. Funding requires explicit `FUND` confirmation and warns that an expired refund always goes to the immutable refund recipient, which may differ from the wallet that funded the contract.
 
-To reset the local devnet completely:
+To reset local runtime state:
 
 ```bash
 docker compose down -v
 npm run clean
 ```
 
-## Preview deployment
+## Public-network operation
 
-Deploy the same contract to Midnight Preview:
-
-```bash
-npm run setup -- --network preview
-```
-
-On first use, the project creates a Preview wallet and prints its address. Fund that address with the Preview faucet when prompted; the setup process waits for tNIGHT, registers NIGHT UTXOs for DUST generation, generates the deployment proof, and records the deployed contract address locally in `.midnight-state.json`.
-
-After deployment:
+Select a network with either `--network preview|preprod` or:
 
 ```bash
-npm run test:e2e -- --network preview
-npm run cli -- --network preview
-```
-
-> `.midnight-state.json`, wallet sync caches, and local private-state databases are gitignored. Never commit wallet recovery material or private witness storage.
-
-## Networks
-
-```bash
-npm run network undeployed
 npm run network preview
-npm run network preprod
 ```
 
-Passing `--network <name>` to a command also selects that network for subsequent commands.
+Public-network wallet recovery material and deployment metadata live in `.midnight-state.json`; wallet sync caches live under `.midnight-wallet-state/`. Both are gitignored. Private-state databases are also gitignored.
+
+The funded v2 deployment is intentionally not represented by the historical v1 Preview address. After a v2 deployment, `npm run test:e2e -- --network <network>` verifies:
+
+- the deployed contract reports `version = 2`;
+- the local private approval credential matches the public commitment;
+- token color, amount, recipients, deadline, status, and approval count are structurally valid;
+- the raw approval secret is absent from public ledger state.
 
 ## Project structure
 
 ```text
-shadow-escrow/
-├── contracts/
-│   ├── shadow-escrow.compact
-│   └── managed/shadow-escrow/
-├── test/
-│   ├── runtime-dependency.test.ts
-│   └── shadow-escrow.test.ts
-├── scripts/
-│   └── e2e-check.ts
-├── src/
-│   ├── witnesses.ts
-│   ├── shadow-escrow.ts
-│   ├── deploy.ts
-│   ├── cli.ts
-│   ├── setup.ts
-│   ├── network.ts
-│   └── wallet.ts
-├── docker-compose.yml
-├── package.json
-└── README.md
+contracts/
+  shadow-escrow.compact
+  archive/v1/shadow-escrow.compact
+  managed/shadow-escrow/
+scripts/
+  e2e-check.ts
+src/
+  cli.ts
+  deploy.ts
+  funded-config.ts
+  network.ts
+  setup.ts
+  shadow-escrow.ts
+  wallet-info.ts
+  wallet-state.ts
+  wallet.ts
+test/
+  funded-config.test.ts
+  funded-contract-regression.test.ts
+  funded-lifecycle.test.ts
+  runtime-dependency.test.ts
+  shadow-escrow.test.ts
+  wallet-state.test.ts
 ```
 
-## Submission evidence
+## Security and operational notes
 
-The final submission should include these two screenshots in `screenshots/`:
+- Funding is permissionless, but the asset, amount, refund recipient, and deadline are fixed at deployment.
+- A funding wallet does not gain refund rights; refund always pays `refundRecipient`.
+- Approval is only possible while `status == Funded` and before the deadline.
+- Approved funds cannot be refunded; they can only settle to the immutable payee.
+- Unapproved funded escrow becomes refundable at the deadline.
+- Unfunded escrow becomes cancellable at the deadline.
+- Transaction submission may succeed before the indexer reflects the new state. The CLI waits for indexed confirmation and tells the operator to inspect authoritative state before retrying if confirmation times out.
+- Preview/preprod private-state storage requires an explicit password; the development placeholder is accepted only on the local undeployed network.
 
-- `screenshots/compile-success.png` — successful `npm run compile` output showing the `approve` circuit.
-- `screenshots/preview-deployment.png` — Preview deployment/e2e output showing network `preview` and contract address `d50e59633dae38c7f515aa17322743e6324fd8cceba06233180647f56b449ce9`.
-
-## Current MVP scope
-
-This cycle proves the core confidential authorization primitive. It does **not** yet custody tokens, release payments, or arbitrate disputes. Those are planned extensions once the private approval mechanism is proven end-to-end on Preview.
+This repository is a prototype and testnet-oriented reference implementation, not an audited production escrow service.

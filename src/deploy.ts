@@ -2,6 +2,7 @@
  * Deploy ShadowEscrow to a Midnight network (undeployed by default; use
  * --network preview|preprod for public networks).
  */
+import { Buffer } from 'node:buffer';
 import { WebSocket } from 'ws';
 import * as Rx from 'rxjs';
 
@@ -30,6 +31,10 @@ import {
   loadShadowEscrowContract,
   zkConfigPath,
 } from './shadow-escrow.js';
+import {
+  parseFundedEscrowTerms,
+  resolvePrivateStatePassword,
+} from './funded-config.js';
 
 // @ts-expect-error Required for wallet sync
 globalThis.WebSocket = WebSocket;
@@ -71,9 +76,7 @@ async function waitForProofServer(maxAttempts = 60, delayMs = 2000): Promise<boo
 }
 
 async function createProviders(walletCtx: WalletContext) {
-  const privateStatePassword =
-    process.env.PRIVATE_STATE_PASSWORD?.trim() ||
-    'Local-Devnet-Development-Placeholder-1';
+  const privateStatePassword = resolvePrivateStatePassword(network);
 
   const walletProvider = {
     getCoinPublicKey: () => walletCtx.shieldedSecretKeys.coinPublicKey,
@@ -85,15 +88,22 @@ async function createProviders(walletCtx: WalletContext) {
           shieldedSecretKeys: walletCtx.shieldedSecretKeys,
           dustSecretKey: walletCtx.dustSecretKey,
         },
-        { ttl: ttl ?? new Date(Date.now() + 30 * 60 * 1000) },
+        {
+          ttl: ttl ?? new Date(Date.now() + 30 * 60 * 1000),
+          tokenKindsToBalance: 'all',
+        },
       );
-      return walletCtx.wallet.finalizeRecipe(recipe);
+      const signedRecipe = await walletCtx.wallet.signRecipe(
+        recipe,
+        (payload) => walletCtx.unshieldedKeystore.signData(payload),
+      );
+      return walletCtx.wallet.finalizeRecipe(signedRecipe);
     },
     submitTx: (tx: any) => walletCtx.wallet.submitTransaction(tx) as any,
   };
 
   const zkConfigProvider = new NodeZkConfigProvider(zkConfigPath);
-  const accountId = walletCtx.unshieldedKeystore.getBech32Address().toString();
+  const accountId = walletCtx.accountId;
 
   return {
     privateStateProvider: levelPrivateStateProvider({
@@ -119,6 +129,14 @@ async function main() {
   console.log('\n╔══════════════════════════════════════════════════════════════╗');
   console.log(`║  Deploy shadow-escrow to ${network}`);
   console.log('╚══════════════════════════════════════════════════════════════╝\n');
+
+  const terms = parseFundedEscrowTerms();
+  console.log('─── Immutable escrow terms ─────────────────────────────────────\n');
+  console.log(`  Token color:      0x${Buffer.from(terms.tokenColor).toString('hex')}`);
+  console.log(`  Amount:           ${terms.amount.toString()}`);
+  console.log(`  Payee:            0x${Buffer.from(terms.payee.bytes).toString('hex')}`);
+  console.log(`  Refund recipient: 0x${Buffer.from(terms.refundRecipient.bytes).toString('hex')}`);
+  console.log(`  Deadline:         ${terms.deadline.toString()} (Unix seconds)\n`);
 
   const seed = SEED;
 
@@ -273,6 +291,9 @@ async function main() {
   process.stdout.write(' done.\n');
 
   console.log('  Deploying contract...\n');
+  if (terms.deadline <= BigInt(Math.floor(Date.now() / 1000))) {
+    throw new Error('Escrow deadline expired while preparing deployment; choose a new future deadline.');
+  }
 
   const MAX_RETRIES = 20;
   const RETRY_DELAY_MS = 5000;
@@ -282,7 +303,13 @@ async function main() {
     try {
       deployed = await deployContract(providers, {
         compiledContract: compiledContract as any,
-        args: [],
+        args: [
+          terms.tokenColor,
+          terms.amount,
+          terms.payee,
+          terms.refundRecipient,
+          terms.deadline,
+        ],
         privateStateId: PRIVATE_STATE_ID,
         initialPrivateState,
       });

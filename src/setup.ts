@@ -26,9 +26,10 @@ async function main(): Promise<void> {
   // 2. Compile the contract (network-agnostic).
   run('npm', ['run', 'compile']);
 
-  // 3. Deploy. Forward --network so deploy.ts sees the same network.
-  const deployArgs = network === 'undeployed' ? [] : ['--', '--network', network];
-  run('npm', ['run', 'deploy', ...deployArgs]);
+  // 3. Deploy. Forward every explicit setup flag, including immutable
+  // funded-escrow terms; deploy.ts independently re-validates them.
+  const forwarded = argv.slice(2);
+  run('npm', ['run', 'deploy', '--', ...forwarded]);
 }
 
 main().catch((e) => {
